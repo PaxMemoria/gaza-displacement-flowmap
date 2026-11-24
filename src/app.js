@@ -11,6 +11,8 @@ var T = {
     note: function (total, flows) { return fmt(total) + ' reported displacements along ' + fmt(flows) + ' recorded routes.'; },
     hint: 'Click a point to show only its routes. Click the map or press Esc to show all.',
     from: 'From', to: 'To', count: 'Reported displacements', households: 'households', date: 'Date',
+    routes: 'Routes', dates: 'Dates', mainDest: 'Main destinations', mainOrig: 'Main origins', more: 'more',
+    approx: 'Place unknown or only a broad area (North / South)',
     unknown: 'Unknown',
     origin: 'Place of origin', destination: 'Destination',
     perRoute: 'Reported displacements per route:',
@@ -27,7 +29,9 @@ var T = {
     phase: 'المرحلة',
     note: function (total, flows) { return fmt(total) + ' حالة نزوح مُبلَّغ عنها، في ' + fmt(flows) + ' مسارًا مرصودًا.'; },
     hint: 'اضغط على نقطة لإظهار مساراتها فقط. اضغط على الخريطة أو مفتاح Esc لإظهار الكل.',
-    from: 'من', to: 'إلى', count: 'حالات النزوح المُبلَّغ عنها', households: 'أسرة', date: 'التاريخ',
+    from: 'من', to: 'إلى', count: 'حالات النزوح المُبلَّغ عنها', households: 'أسر', date: 'التاريخ',
+    routes: 'المسارات', dates: 'الفترة', mainDest: 'أبرز الوجهات', mainOrig: 'أبرز أماكن النزوح', more: 'أخرى',
+    approx: 'مكان غير معروف أو منطقة عامة فقط (الشمال / الجنوب)',
     unknown: 'غير معروف',
     origin: 'مكان النزوح', destination: 'وجهة النزوح',
     perRoute: 'عدد حالات النزوح في كل مسار:',
@@ -81,7 +85,7 @@ fetchGeoJson('./data/governorates.geojson', {
 var layers2026 = L.layerGroup();
 Promise.all([
   fetchGeoJson('./data/militarized_zones.geojson', { style: { color: '#8c2d04', weight: 0.5, fillColor: '#d94801', fillOpacity: 0.12 } }),
-  fetchGeoJson('./data/yellow_line_area.geojson', { style: { color: '#e6b800', weight: 0.5, fillColor: '#ffd700', fillOpacity: 0.25 } }),
+  fetchGeoJson('./data/yellow_line_area.geojson', { style: { color: '#e6b800', weight: 1, dashArray: '4, 3', fillColor: '#8c8c8c', fillOpacity: 0.18 } }),
   fetchGeoJson('./data/coordination_line.geojson', { style: { color: '#f2c200', weight: 3 } })
 ]).then(function (ls) {
   ls.forEach(function (l) { layers2026.addLayer(l); });
@@ -93,8 +97,37 @@ var greyLayer = null;
 var POINT_STYLE = {
   origin: { radius: 4, weight: 1, color: '#fff', fillColor: 'rgb(255, 103, 31)', fillOpacity: 0.9, opacity: 1 },
   destination: { radius: 3, weight: 0.5, color: 'rgb(17, 142, 170)', fillColor: 'rgb(0, 51, 160)', fillOpacity: 0.8, opacity: 1 },
-  grey: { radius: 3, weight: 0.5, color: '#999', fillColor: '#bbb', fillOpacity: 0.6, opacity: 0.6 }
+  grey: { radius: 3, weight: 0.5, color: '#999', fillColor: '#bbb', fillOpacity: 0.6, opacity: 0.6 },
+  originApprox: { radius: 4, weight: 2, color: 'rgb(255, 103, 31)', fillColor: '#fff', fillOpacity: 1, opacity: 1 },
+  destinationApprox: { radius: 4, weight: 2, color: 'rgb(0, 51, 160)', fillColor: '#fff', fillOpacity: 1, opacity: 1 }
 };
+
+// "Unknown", and the broad "North" / "South" points, are not real locations
+function isApprox(name) {
+  var n = String(name || '').toLowerCase();
+  return n === 'unknown' || n === 'north' || n === 'south' || n.indexOf('north (') === 0 || n.indexOf('south (') === 0;
+}
+
+function pointStyle(p) {
+  if (p.isOrigin) return isApprox(p.s_name) ? POINT_STYLE.originApprox : POINT_STYLE.origin;
+  return isApprox(p.e_name) ? POINT_STYLE.destinationApprox : POINT_STYLE.destination;
+}
+
+// Totals per origin and per destination point, so a shared point's tooltip covers all its routes
+var AGG = { s: {}, e: {} };
+function buildAggregates(rows) {
+  AGG = { s: {}, e: {} };
+  rows.forEach(function (r) {
+    [['s', r.s_id, place(r.e_name, r.e_gov)], ['e', r.e_id, place(r.s_name, r.s_gov)]].forEach(function (x) {
+      var a = AGG[x[0]][x[1]] || (AGG[x[0]][x[1]] = { total: 0, routes: 0, other: {}, dmin: r.date, dmax: r.date });
+      a.total += r.movements;
+      a.routes += 1;
+      a.other[x[2]] = (a.other[x[2]] || 0) + r.movements;
+      if (r.date < a.dmin) a.dmin = r.date;
+      if (r.date > a.dmax) a.dmax = r.date;
+    });
+  });
+}
 
 // The flow layer writes its own fields into feature properties, so each layer gets its own copies
 function toFeatureCollection(rows) {
@@ -126,7 +159,7 @@ function highlight(selected) {
   flowLayer.eachLayer(function (l) {
     var p = l.feature.properties;
     var on = p.isOrigin ? sIds[p.s_id] : eIds[p.e_id];
-    l.setStyle(on ? (p.isOrigin ? POINT_STYLE.origin : POINT_STYLE.destination) : POINT_STYLE.grey);
+    l.setStyle(on ? pointStyle(p) : POINT_STYLE.grey);
     if (on) l.bringToFront();
   });
 }
@@ -136,7 +169,7 @@ function resetHighlight() {
   map.removeLayer(greyLayer);
   flowLayer.selectAllFeaturesForPathDisplay();
   flowLayer.eachLayer(function (l) {
-    l.setStyle(l.feature.properties.isOrigin ? POINT_STYLE.origin : POINT_STYLE.destination);
+    l.setStyle(pointStyle(l.feature.properties));
   });
 }
 
@@ -167,10 +200,23 @@ function bindTooltip(feature, layer) {
   var p = feature.properties;
   var from = '<b>' + T.from + ':</b> ' + place(p.s_name, p.s_gov);
   var to = '<b>' + T.to + ':</b> ' + place(p.e_name, p.e_gov);
-  var text = p.isOrigin ? from + '<br/>' + to : to + '<br/>' + from;
-  text += '<br/><b>' + T.count + ':</b> ' + fmt(p.movements);
-  if (p.households) text += ' (' + fmt(p.households) + ' ' + T.households + ')';
-  text += '<br/><b>' + T.date + ':</b> ' + fmtDate(p.date);
+  var a = p.isOrigin ? AGG.s[p.s_id] : AGG.e[p.e_id];
+  var text;
+  if (!a || a.routes === 1) {
+    text = p.isOrigin ? from + '<br/>' + to : to + '<br/>' + from;
+    text += '<br/><b>' + T.count + ':</b> ' + fmt(p.movements);
+    if (p.households) text += ' (' + fmt(p.households) + ' ' + T.households + ')';
+    text += '<br/><b>' + T.date + ':</b> ' + fmtDate(p.date);
+  } else {
+    var top = Object.keys(a.other).sort(function (x, y) { return a.other[y] - a.other[x]; });
+    var list = top.slice(0, 3).map(function (k) { return k + ' (' + fmt(a.other[k]) + ')'; }).join('<br/>&nbsp;&nbsp;');
+    if (top.length > 3) list += '<br/>&nbsp;&nbsp;+' + (top.length - 3) + ' ' + T.more;
+    text = (p.isOrigin ? from : to) +
+      '<br/><b>' + T.count + ':</b> ' + fmt(a.total) +
+      '<br/><b>' + T.routes + ':</b> ' + fmt(a.routes) +
+      '<br/><b>' + (p.isOrigin ? T.mainDest : T.mainOrig) + ':</b><br/>&nbsp;&nbsp;' + list +
+      '<br/><b>' + T.dates + ':</b> ' + (a.dmin === a.dmax ? fmtDate(a.dmin) : fmtDate(a.dmin) + ' – ' + fmtDate(a.dmax));
+  }
   layer.bindTooltip(text);
 }
 
@@ -193,6 +239,7 @@ function showPhase(phase) {
 
   var rows = allRows.filter(function (r) { return r.phase === phase; });
   var total = rows.reduce(function (a, r) { return a + r.movements; }, 0);
+  buildAggregates(rows);
 
   // Grey copy of every route, shown underneath while a point is selected
   greyLayer = L.canvasFlowmapLayer(toFeatureCollection(rows), {
@@ -208,20 +255,15 @@ function showPhase(phase) {
 
   flowLayer = L.canvasFlowmapLayer(toFeatureCollection(rows), {
     originAndDestinationFieldIds: FLOW_IDS,
-    style: function (f) {
-      return f.properties.isOrigin ? POINT_STYLE.origin : POINT_STYLE.destination;
-    },
+    style: function (f) { return pointStyle(f.properties); },
     canvasBezierStyle: {
-      type: 'classBreaks',
-      field: 'movements',
-      classBreakInfos: BREAKS.map(function (b) {
-        return {
-          classMinValue: b.min,
-          classMaxValue: b.max,
-          symbol: { strokeStyle: b.color, lineWidth: b.width, lineCap: 'round', shadowColor: b.shadow, shadowBlur: 2.0 }
-        };
-      }),
-      defaultSymbol: { strokeStyle: '#e7e1ef', lineWidth: 0.5, lineCap: 'round', shadowColor: '#e7e1ef', shadowBlur: 1.5 }
+      type: 'uniqueValue',
+      field: 'style_key',
+      uniqueValueInfos: [].concat.apply([], BREAKS.map(function (b, i) {
+        var solid = { strokeStyle: b.color, lineWidth: b.width, lineCap: 'round', shadowColor: b.shadow, shadowBlur: 2.0 };
+        var dashed = Object.assign({}, solid, { lineCap: 'butt', lineDash: [Math.max(4, b.width * 2), Math.max(3, b.width * 1.5)], shadowBlur: 0 });
+        return [{ value: i + '', symbol: solid }, { value: i + '_a', symbol: dashed }];
+      }))
     },
     pathDisplayMode: 'all',
     animationStarted: true,
@@ -285,9 +327,11 @@ legend.onAdd = function () {
     '<div class="row"><span class="dot" style="background:rgb(0,51,160)"></span><b>' + T.destination + '</b></div>' +
     '<div style="margin-top:6px">' + T.perRoute + '</div>' +
     breakRows +
+    '<div class="row" style="margin-top:4px"><span class="dot" style="background:#fff;border:2px solid rgb(255,103,31);width:10px;height:10px"></span>' +
+    '<span class="bar" style="height:0;border-top:2px dashed #ff671f;width:30px"></span>' + T.approx + '</div>' +
     '<div id="legend-2026" style="display:none">' +
     '<div class="row" style="margin-top:6px"><span class="bar" style="height:3px;background:#f2c200"></span>' + T.coordLine + '</div>' +
-    '<div class="row"><span class="swatch" style="background:rgba(255,215,0,0.35);border:1px solid #e6b800"></span>' + T.yellowArea + '</div>' +
+    '<div class="row"><span class="swatch" style="background:rgba(140,140,140,0.3);border:1px dashed #e6b800"></span>' + T.yellowArea + '</div>' +
     '<div class="row"><span class="swatch" style="background:rgba(217,72,1,0.15);border:1px solid #8c2d04"></span>' + T.zones + '</div>' +
     '</div>' +
     '<div class="source">' + T.source + '</div>';
@@ -302,6 +346,11 @@ Papa.parse('./data/data.csv', {
   skipEmptyLines: true,
   complete: function (results) {
     allRows = results.data;
+    allRows.forEach(function (r) {
+      var i = 0;
+      BREAKS.forEach(function (b, k) { if (r.movements >= b.min && r.movements <= b.max) i = k; });
+      r.style_key = i + (isApprox(r.s_name) || isApprox(r.e_name) ? '_a' : '');
+    });
     var buttons = '';
     for (var k = 1; k <= PHASE_COUNT; k++) {
       buttons += '<button type="button" data-phase="' + k + '">' + phaseLabel(k) + '</button>';

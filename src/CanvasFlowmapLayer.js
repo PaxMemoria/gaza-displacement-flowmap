@@ -681,6 +681,8 @@
     },
 
     _applyCanvasLineSymbol: function(ctx, symbolObject, screenOriginPoint, screenDestinationPoint) {
+      // local change: optional dashed static lines (symbolObject.lineDash, e.g. [4, 4])
+      ctx.setLineDash(symbolObject.lineDash || []);
       ctx.lineCap = symbolObject.lineCap;
       ctx.lineWidth = symbolObject.lineWidth;
       ctx.strokeStyle = symbolObject.strokeStyle;
