@@ -9,6 +9,7 @@ var T = {
     pageTitle: 'Gaza Displacement Map',
     phase: 'Phase',
     note: function (total, flows) { return fmt(total) + ' reported displacements along ' + fmt(flows) + ' recorded routes.'; },
+    hint: 'Click a point to show only its routes. Click the map or press Esc to show all.',
     from: 'From', to: 'To', count: 'Reported displacements', households: 'households', date: 'Date',
     unknown: 'Unknown',
     origin: 'Place of origin', destination: 'Destination',
@@ -25,6 +26,7 @@ var T = {
     pageTitle: 'خريطة النزوح في غزة',
     phase: 'المرحلة',
     note: function (total, flows) { return fmt(total) + ' حالة نزوح مُبلَّغ عنها، في ' + fmt(flows) + ' مسارًا مرصودًا.'; },
+    hint: 'اضغط على نقطة لإظهار مساراتها فقط. اضغط على الخريطة أو مفتاح Esc لإظهار الكل.',
     from: 'من', to: 'إلى', count: 'حالات النزوح المُبلَّغ عنها', households: 'أسرة', date: 'التاريخ',
     unknown: 'غير معروف',
     origin: 'مكان النزوح', destination: 'وجهة النزوح',
@@ -87,6 +89,59 @@ Promise.all([
 
 var allRows = [];
 var flowLayer = null;
+var greyLayer = null;
+var POINT_STYLE = {
+  origin: { radius: 4, weight: 1, color: '#fff', fillColor: 'rgb(255, 103, 31)', fillOpacity: 0.9, opacity: 1 },
+  destination: { radius: 3, weight: 0.5, color: 'rgb(17, 142, 170)', fillColor: 'rgb(0, 51, 160)', fillOpacity: 0.8, opacity: 1 },
+  grey: { radius: 3, weight: 0.5, color: '#999', fillColor: '#bbb', fillOpacity: 0.6, opacity: 0.6 }
+};
+
+// The flow layer writes its own fields into feature properties, so each layer gets its own copies
+function toFeatureCollection(rows) {
+  return {
+    type: 'FeatureCollection',
+    features: rows.map(function (r) {
+      return { type: 'Feature', geometry: { type: 'Point', coordinates: [r.s_lon, r.s_lat] }, properties: Object.assign({}, r) };
+    })
+  };
+}
+
+var FLOW_IDS = {
+  originUniqueIdField: 's_id',
+  originGeometry: { x: 's_lon', y: 's_lat' },
+  destinationUniqueIdField: 'e_id',
+  destinationGeometry: { x: 'e_lon', y: 'e_lat' }
+};
+
+// Clicking a point keeps only its routes in colour; every other route and point turns grey
+function highlight(selected) {
+  if (!selected.length || !flowLayer) return;
+  var sIds = {}, eIds = {};
+  selected.forEach(function (f) { sIds[f.properties.s_id] = true; eIds[f.properties.e_id] = true; });
+  if (!map.hasLayer(greyLayer)) {
+    greyLayer.addTo(map);
+    greyLayer.bringToBack();
+  }
+  flowLayer.selectFeaturesForPathDisplay(selected, 'SELECTION_NEW');
+  flowLayer.eachLayer(function (l) {
+    var p = l.feature.properties;
+    var on = p.isOrigin ? sIds[p.s_id] : eIds[p.e_id];
+    l.setStyle(on ? (p.isOrigin ? POINT_STYLE.origin : POINT_STYLE.destination) : POINT_STYLE.grey);
+    if (on) l.bringToFront();
+  });
+}
+
+function resetHighlight() {
+  if (!flowLayer || !greyLayer || !map.hasLayer(greyLayer)) return;
+  map.removeLayer(greyLayer);
+  flowLayer.selectAllFeaturesForPathDisplay();
+  flowLayer.eachLayer(function (l) {
+    l.setStyle(l.feature.properties.isOrigin ? POINT_STYLE.origin : POINT_STYLE.destination);
+  });
+}
+
+map.on('click', resetHighlight);
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') resetHighlight(); });
 
 function fmt(n) { return Number(n).toLocaleString('en'); }
 
@@ -125,6 +180,10 @@ function showPhase(phase) {
     map.removeLayer(flowLayer);
     flowLayer = null;
   }
+  if (greyLayer) {
+    map.removeLayer(greyLayer);
+    greyLayer = null;
+  }
   if (phase === PHASE_2026) {
     layers2026.addTo(map);
   } else {
@@ -135,22 +194,22 @@ function showPhase(phase) {
   var rows = allRows.filter(function (r) { return r.phase === phase; });
   var total = rows.reduce(function (a, r) { return a + r.movements; }, 0);
 
-  flowLayer = L.canvasFlowmapLayer({
-    type: 'FeatureCollection',
-    features: rows.map(function (r) {
-      return { type: 'Feature', geometry: { type: 'Point', coordinates: [r.s_lon, r.s_lat] }, properties: r };
-    })
-  }, {
-    originAndDestinationFieldIds: {
-      originUniqueIdField: 's_id',
-      originGeometry: { x: 's_lon', y: 's_lat' },
-      destinationUniqueIdField: 'e_id',
-      destinationGeometry: { x: 'e_lon', y: 'e_lat' }
+  // Grey copy of every route, shown underneath while a point is selected
+  greyLayer = L.canvasFlowmapLayer(toFeatureCollection(rows), {
+    originAndDestinationFieldIds: FLOW_IDS,
+    style: function () { return { radius: 0, weight: 0, opacity: 0, fillOpacity: 0, interactive: false }; },
+    canvasBezierStyle: {
+      type: 'simple',
+      symbol: { strokeStyle: 'rgba(140, 140, 140, 0.45)', lineWidth: 1, lineCap: 'round', shadowColor: 'rgba(0, 0, 0, 0)', shadowBlur: 0 }
     },
+    pathDisplayMode: 'all',
+    animationStarted: false
+  });
+
+  flowLayer = L.canvasFlowmapLayer(toFeatureCollection(rows), {
+    originAndDestinationFieldIds: FLOW_IDS,
     style: function (f) {
-      return f.properties.isOrigin
-        ? { radius: 4, weight: 1, color: '#fff', fillColor: 'rgb(255, 103, 31)', fillOpacity: 0.9 }
-        : { radius: 3, weight: 0.5, color: 'rgb(17, 142, 170)', fillColor: 'rgb(0, 51, 160)', fillOpacity: 0.8 };
+      return f.properties.isOrigin ? POINT_STYLE.origin : POINT_STYLE.destination;
     },
     canvasBezierStyle: {
       type: 'classBreaks',
@@ -171,6 +230,11 @@ function showPhase(phase) {
     animationDuration: 2000,
     onEachFeature: bindTooltip
   }).addTo(map);
+
+  flowLayer.on('click', function (e) {
+    L.DomEvent.stopPropagation(e);
+    highlight(e.sharedOriginFeatures.length ? e.sharedOriginFeatures : e.sharedDestinationFeatures);
+  });
 
   // Zoom to the phase's flows, keeping them clear of the title panel (right) and legend (left)
   var bounds = L.latLngBounds([]);
@@ -197,7 +261,8 @@ title.onAdd = function () {
   div.innerHTML =
     '<h1>' + T.title + '</h1>' +
     '<div class="phases" id="phases"></div>' +
-    '<div class="phase-note" id="phase-note"></div>';
+    '<div class="phase-note" id="phase-note"></div>' +
+    '<div class="phase-note hint">' + T.hint + '</div>';
   L.DomEvent.disableClickPropagation(div);
   L.DomEvent.disableScrollPropagation(div);
   div.addEventListener('click', function (e) {

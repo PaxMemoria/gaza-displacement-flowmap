@@ -110,6 +110,16 @@
       max-width: 300px;
     }
 
+    /* The flow canvases draw on top of the points; let clicks reach the points underneath */
+    .leaflet-overlay-pane canvas {
+      pointer-events: none;
+    }
+
+    .phase-note.hint {
+      color: #777;
+      font-size: 11px;
+    }
+
     .leaflet-tooltip.gov-label {
       background: transparent;
       border: none;
